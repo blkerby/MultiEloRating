@@ -25,19 +25,31 @@ args = parser.parse_args()
 data_path = os.path.join(args.data_dir, f"{args.goal}.json")
 race_list = json.load(open(data_path, "r"))
 
-race_list = race_list
+# Filter to recorded races:
+race_list = [race for race in race_list if race["recorded"]]
 
-trueskill_env = trueskill.TrueSkill(backend='mpmath')
-    
+# trueskill_env = trueskill.TrueSkill(backend='mpmath')
+# trueskill_env = trueskill.TrueSkill(backend=None, mu=0.0, sigma=3.0, beta=3.5, tau=0.8, draw_probability=1e-3)
+trueskill_env = trueskill.TrueSkill(backend=None, mu=0.0, sigma=8.0, beta=5.5, tau=0.4, draw_probability=0.01)
+
 user_scores = {}
 user_scores_history = defaultdict(lambda: [])
-if args.trueskill:
-    default_score = trueskill_env.create_rating()
-else:
-    default_score = 0.0
+
+average_lr = 0.002
+average_weight = 0.02
+average_score = 0.0
+
+default_lr = 0.1
+default_quantile = 0.09
+default_score = 0.0
 
 # Evaluate using kendall-tau correlation:
 def eval_race(entrants):
+    if args.trueskill:
+        default_rating = trueskill_env.create_rating(mu=default_score)
+    else:
+        default_rating = default_score
+
     cnt_pair = 0
     cnt_incorrect = 0
     for i in range(len(entrants)):
@@ -45,7 +57,7 @@ def eval_race(entrants):
         user1 = e1["user_id"]
         if user1 is None:
             continue
-        score1 = user_scores.get(user1, default_score)
+        score1 = user_scores.get(user1, default_rating)
         if args.trueskill:
             score1 = score1.mu
         for j in range(i + 1, len(entrants)):
@@ -53,7 +65,7 @@ def eval_race(entrants):
             user2 = e2["user_id"]
             if user2 is None:
                 continue
-            score2 = user_scores.get(user2, default_score)
+            score2 = user_scores.get(user2, default_rating)
             if args.trueskill:
                 score2 = score2.mu
             if e1["place"] == e2["place"]:
@@ -67,7 +79,16 @@ def eval_race(entrants):
             cnt_pair += 1
     return cnt_incorrect, cnt_pair
 
-def score_race(race_idx, entrants, learning_rate, score_floor, negative_scaling, negative_scaling_cap, K_rate):
+def score_race(race_idx, entrants):
+    # TODO: move these out of globals
+    global average_score
+    global default_score
+    
+    if args.trueskill:
+        default_rating = trueskill_env.create_rating(mu=default_score)
+    else:
+        default_rating = default_score
+
     user_id_list = []
     rating_list = []
     rank_list = []
@@ -75,7 +96,7 @@ def score_race(race_idx, entrants, learning_rate, score_floor, negative_scaling,
         user_id = e["user_id"]
         if user_id is None:
             continue
-        rating = user_scores.get(user_id, default_score)
+        rating = user_scores.get(user_id, default_rating)
         rank = e["place"]
         user_id_list.append(user_id)
         rating_list.append(rating)
@@ -85,80 +106,153 @@ def score_race(race_idx, entrants, learning_rate, score_floor, negative_scaling,
         rating_list = [(x,) for x in rating_list]
         new_ratings = trueskill_env.rate(rating_list, rank_list)
         new_ratings = [x[0] for x in new_ratings]
+        for i in range(len(new_ratings)):
+            adjusted_mu = new_ratings[i].mu - average_score * average_weight
+            new_ratings[i] = trueskill.Rating(mu=adjusted_mu, sigma=new_ratings[i].sigma)
+    else:                  
+        # ratings_grad = multi_elo_rating.plackett_luce_gradient(
+        #     rating_list,
+        #     inverted=False)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
+        #     ratings_grad,
+        #     learning_rate=0.65,
+        #     rating_floor=-0.1,
+        #     negative_scaling=0.7,
+        #     negative_scaling_cap=2.5,
+        #     K_rate=1.5,
+        # )
 
-        for i in range(len(user_id_list)):
-            user_id = user_id_list[i]
-            new_rating = new_ratings[i]
-            user_scores[user_id] = new_rating
-            user_scores_history[user_id].append((race_idx, new_rating))
-    else:                    
-        rating_grad = multi_elo_rating.get_rating_gradient(rating_list, rank_list)
+        ratings_grad = multi_elo_rating.plackett_luce_gradient(
+            rating_list,
+            inverted=True)
+        new_ratings = multi_elo_rating.get_updated_ratings(
+            rating_list,
+            ratings_grad,
+            learning_rate=0.45,
+            rating_floor=-0.1,
+            negative_scaling=0.75,
+            negative_scaling_cap=2.5,
+            K_rate=1.7,
+        )
 
-        for i in range(len(user_id_list)):
-            user_id = user_id_list[i]
-            old_rating = rating_list[i]
-            grad = rating_grad[i]
-            if grad < 0:
-                negative_scaling_strength = 1 - (min(old_rating, negative_scaling_cap) - score_floor) / (negative_scaling_cap - score_floor)
-                grad *= 1 - negative_scaling * negative_scaling_strength
-            rating_change = learning_rate * grad / (1 + K_rate * (old_rating - score_floor))
-            new_rating = old_rating + rating_change
-            if new_rating < score_floor:
-                new_rating = score_floor
-            user_scores[user_id] = new_rating
-            user_scores_history[user_id].append((race_idx, new_rating))
+        # ratings_grad = multi_elo_rating.pairwise_elo_gradient(
+        #     rating_list,
+        #     rank_list,
+        #     use_average=False)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
+        #     ratings_grad,
+        #     learning_rate=0.18,
+        #     rating_floor=-0.1,
+        #     negative_scaling=0.7,
+        #     negative_scaling_cap=3.5,
+        #     K_rate=1.85,
+        # )
 
-recorded_only = True
-learning_rate = 0.15
-score_floor = -0.5
-negative_scaling = 0.8
-negative_scaling_cap = 3.5
-K_rate = 0.6
+        # ratings_grad = multi_elo_rating.pairwise_elo_gradient(
+        #     rating_list,
+        #     rank_list,
+        #     use_average=True)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
+        #     ratings_grad,
+        #     learning_rate=1.5,
+        #     rating_floor=-0.1,
+        #     negative_scaling=0.7,
+        #     negative_scaling_cap=2.5,
+        #     K_rate=1.5,
+        # )
+
+        # ratings_grad = multi_elo_rating.get_rating_gradient(
+        #     rating_list,
+        #     rank_list,
+        #     log_density_fn=multi_elo_rating.gaussian_log_density,
+        #     margin=5)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
+        #     ratings_grad,
+        #     learning_rate=0.85,
+        #     rating_floor=-0.1,
+        #     negative_scaling=0.7,
+        #     negative_scaling_cap=3.5,
+        #     K_rate=2.0,
+        # )
+
+        # ratings_grad = multi_elo_rating.get_rating_gradient(
+        #     rating_list,
+        #     rank_list,
+        #     log_density_fn=multi_elo_rating.hyperbolic_exp_density,
+        #     margin=10)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     ratings_grad,
+        #     learning_rate=1.3,
+        #     rating_floor=-0.2,
+        #     negative_scaling=0.75,
+        #     negative_scaling_cap=4.0,
+        #     K_rate=1.3,
+        # )
+
+    for i in range(len(user_id_list)):
+        user_id = user_id_list[i]
+        new_rating = new_ratings[i]
+        user_scores[user_id] = new_rating
+        user_scores_history[user_id].append((race_idx, new_rating))
+        
+    if args.trueskill:
+        race_average_score = sum(r.mu for r in new_ratings) / len(new_ratings)
+    else:
+        race_average_score = sum(new_ratings) / len(new_ratings)
+    average_score = (1 - average_lr) * average_score + average_lr * race_average_score
+    
+    if args.trueskill:
+        cnt_above = sum(1 for r in new_ratings if r.mu > default_score)
+    else:
+        cnt_above = sum(1 for r in new_ratings if r > default_score)        
+    cnt_below = len(new_ratings) - cnt_above
+    default_score += default_lr * (cnt_above * default_quantile - cnt_below * (1 - default_quantile))
+    
+    # print(cnt_above, cnt_below, len(new_ratings), average_score, default_score)
 
 eval_pairs = []
 for race_idx, race in enumerate(race_list):
-    if recorded_only and not race["recorded"]:
-        continue
     cnt_incorrect, cnt_pairs = eval_race(race["entrants"])
     if cnt_pairs > 0:
         eval_pairs.append((cnt_incorrect, cnt_pairs))
-        score_race(race_idx, race["entrants"], learning_rate, score_floor, negative_scaling, negative_scaling_cap, K_rate)
-print(eval_pairs)
+        score_race(race_idx, race["entrants"])
+# print(eval_pairs)
 
 kt = sum(x[0] for x in eval_pairs) / (sum(x[1] for x in eval_pairs))
 if args.trueskill:
     max_score = max(s.mu for s in user_scores.values())
 else:
     max_score = max(user_scores.values())
-print("recorded_only={}, learning rate={}, score_floor={}, negative_scaling={}, negative_scaling_cap={}, K_rate={}, kendall_tau={}, max_score={}".format(
-    recorded_only, learning_rate, score_floor, negative_scaling, negative_scaling_cap, K_rate, kt, max_score))
 
 histories = list(user_scores_history.items())
 histories.sort(key=lambda x: len(x[1]), reverse=True)
-# print(histories)
-# print(sorted(user_scores.values()))
+# print(list((x[0], len(x[1])) for x in histories))
+
 
 user_id_list = []
 time_list = []
 score_list = []
 for user_id, h in histories[:15]:
     for race_idx, score in h:
-        t = datetime.datetime.fromisoformat(race_list[race_idx]["ended_at"].replace('Z', '+00:00'))
         user_id_list.append(user_id)
+        # t = datetime.datetime.fromisoformat(race_list[race_idx]["ended_at"].replace('Z', '+00:00'))
         # time_list.append(t)
         time_list.append(race_idx)
         if args.trueskill:
             score_list.append(score.mu)
         else:
             score_list.append(score)
-        
-df = pd.DataFrame({"user_id": user_id_list, "time": time_list, "score": score_list})
+
+print("kendall_tau: {}".format(kt))        
+df = pd.DataFrame({
+    "User ID": user_id_list,
+    "Race": time_list,
+    "Simulated Rating": score_list})
 
 sns.set_theme()
-sns.relplot(df, kind="line", x="time", y="score", hue="user_id")
-plt.show()
-# 
-# df2 = sns.load_dataset("dots")
-# print(df2)
-# print(df)
-# print(sorted(user_scores.values()))
+sns.relplot(df, kind="line", x="Race", y="Simulated Rating", hue="User ID")
+# plt.show()

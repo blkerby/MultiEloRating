@@ -1,40 +1,188 @@
 import torch
-import spline
+import math
 
-def log_density(rating, x):
-    return -torch.square(x - rating)
 
-def get_rating_log_prob(ratings, num_censored=0):
-    a = min(ratings).detach() - 5
-    b = max(ratings).detach() + 5
-    k = 10000   # number of spline nodes to use for the numerical integration
-    sp = spline.Spline(k, a, b, dtype=torch.double)
+def pairwise_elo_gradient(ratings, ranks, use_average=bool):
+    out = []
+    for i, r1 in enumerate(ratings):
+        g = 0
+        cnt = 0
+        for j, r2 in enumerate(ratings):
+            if ranks[i] < ranks[j]:
+                g += 1.0 / (1.0 + math.exp(r1 - r2))
+                cnt += 1
+            elif ranks[i] > ranks[j]:
+                g -= 1.0 / (1.0 + math.exp(r2 - r1))
+                cnt += 1
+        if use_average and cnt > 0:
+            g /= cnt
+        out.append(g)
+    return out
+
+
+def plackett_luce_gradient(ratings: list[float], inverted: bool) -> list[float]:
+    """
+    The ratings are assumed to be given in order by outcome, with the winner's rating listed first.
+    Ties are not supported.
+    """
+    ratings = torch.tensor(ratings, dtype=torch.double)
+    if inverted:
+        ratings = -ratings
+    else:
+        ratings = torch.flip(ratings, [0])        
+    lam = torch.exp(-ratings)
+    clam = torch.flip(torch.cumsum(torch.flip(lam, [0]), 0), [0])
+    inv_clam = torch.cumsum(1.0 / clam, 0)
+    out = -1.0 + lam * inv_clam
+    if inverted:
+        out = -out
+    else:
+        out = torch.flip(out, [0])
+    return out.tolist()
+
+
+class Spline:
+    def __init__(self, n, a, b, dtype=torch.double):
+        super().__init__()
+        self.n = n
+        self.a = a
+        self.b = b
+        self.scale = (b - a) / (n - 1)
+        self.x = torch.arange(n, dtype=dtype) * self.scale + a
+
+    def antideriv(self, y):
+        y_pad = torch.cat([
+            torch.zeros_like(y[0:1]),
+            y,
+            torch.zeros_like(y[0:1]),
+        ], dim=0)
+        out = torch.cat([
+            torch.zeros_like(y[0:1]),
+            -1/24 * y_pad[:-3] + 13/24 * y_pad[1:-2] + 13/24 * y_pad[2:-1] - 1/24 * y_pad[3:]
+        ])
+        return torch.cumsum(out, dim=0) * self.scale
+
+    def log_antideriv(self, log_y):
+        log_y_pad = torch.cat([
+            torch.full_like(log_y[0:1], float('-inf')),
+            log_y,
+            torch.full_like(log_y[0:1], float('-inf')),
+        ], dim=0)
+        A = torch.stack([log_y_pad[:-3], log_y_pad[1:-2], log_y_pad[2:-1], log_y_pad[3:]], dim=0)
+        c = torch.amax(A, dim=0, keepdim=True)
+        A = A - c
+        eA = torch.exp(A)
+        y1 = -1/24 * eA[0] + 13/24 * eA[1] + 13/24 * eA[2] - 1/24 * eA[3]
+        y1 = torch.clamp_min(y1, 1e-30)
+        log_y1 = torch.log(y1) + c[0]
+        out = torch.cat([
+            torch.full_like(log_y1[0:1], float('-inf')),
+            log_y1
+        ], dim=0)
+        return torch.logcumsumexp(out, dim=0) + math.log(self.scale)
+
+
+def get_rating_log_prob(ratings, num_censored, log_density_fn, margin):
+    # the +/-margin is to approximately cover the range on which the density functions
+    # are non-negligibly different from zero:
+    a = min(ratings).detach() - margin
+    b = max(ratings).detach() + margin
+    k = 500   # number of spline nodes to use for the numerical integration
+    sp = Spline(k, a, b, dtype=torch.double)
     x = sp.x
 
-    # Rankings tied for last place would be from DNF/DQ, where the racer
-    # quit before completing the race. These are treated as censored,
+    # Rankings tied for last place would be from DNF/DQ, where the player
+    # quit before completing the game. These are treated as censored,
     # where all we assume is that they would have finished after all others.
     i = 0
     F = 0
     while i < num_censored:
-        F = F + sp.log_antideriv(log_density(ratings[i], x))
+        F = F + sp.log_antideriv(log_density_fn(x - ratings[i]))
         i += 1
 
     while i < len(ratings):
-        f = F + log_density(ratings[i], x)
+        f = F + log_density_fn(x - ratings[i])
         F = sp.log_antideriv(f)
         i += 1
 
     log_prob = F[-1]
     return log_prob
 
-def get_rating_gradient(ratings, ranks):
+
+def gaussian_log_density(x):
+    return -torch.square(x) / 2
+
+
+def hyperbolic_secant_density(x):
+    return -torch.logaddexp(x, -x)
+
+
+def hyperbolic_exp_density(x):    
+    return -torch.sqrt(torch.square(x) + 1)
+
+
+def get_thurstonian_rating_gradient(ratings: list[float], ranks: list[int], log_density_fn, margin: float) -> list[float]:
+    """
+    Given a list of player ratings and a list of corresponding ranks on a given game,
+    return a list of gradients of the log-likelihood with respect to those ratings.
+    This indicates the direction that the ratings should be updated in order to
+    increase the likelihood of the game's outcome. 
+    Ties are supported only for last place (i.e. highest-numbered rank).
+    """
     ratings = torch.tensor(ratings, dtype=torch.double, requires_grad=True)
     ranks = torch.tensor(ranks, dtype=torch.int64)
     sorted_ranks, indices = torch.sort(ranks, descending=True)
     num_censored = torch.sum(sorted_ranks == sorted_ranks[0])
     ordered_ratings = ratings[indices]
-    log_prob = get_rating_log_prob(ordered_ratings, num_censored)
+    log_prob = get_rating_log_prob(ordered_ratings, num_censored, log_density_fn, margin)
     log_prob.backward()
     return ratings.grad.tolist()
   
+  
+def get_updated_ratings(
+    ratings: list[float],
+    ratings_grad: list[float],
+    learning_rate: float,
+    rating_floor: float,
+    negative_scaling: float,
+    negative_scaling_cap: float,
+    K_rate: float,
+) -> list[float]:
+    """
+    Given a list of player ratings and a list of corresponding ranks on a given game,
+    return a list of updated player ratings.
+    :param ratings: A list of player ratings.
+    :param ratings_grad: A list of player rating gradient values.
+    :param ranks: A corresponding list of player ranks in the outcome of the game. 
+      Ties are supported only for last place (i.e. highest-numbered rank).
+    :param learning_rate: the overall scale factor applied to rating updates, i.e. the step size
+    :param rating_floor: the minimum possible rating; any rating that drops below this will be clamped to this value.
+    :param negative_scaling: the maximum factor subtracted from negative rating gradients, to scale them down.
+      This is a way of softening the rating floor, to make it more continuous. It also functions as a sort of activity 
+      bonus for new players. This effect is fully applied at the rating floor and then tapered off linearly until it
+      stops at `negative_scaling_cap`. A value of 0 won't apply any scaling to negative gradients. A value of 1 will
+      completely zero out negative gradients at the rating floor.
+    :param negative_scaling_cap: the rating value beyond which no scaling of negative gradients will occur.
+    :param K_rate: a value that controls the extent to which the learning rate is decayed for higher-rated players.
+      Steps are multiplied by 1 / (1 + K_rate * (rating - rating_floor)). A value of 0 means apply the same
+      learning rate regardless of rating.
+    :param log_density_fn: Log of the density function to be used.
+    :param margin: Value such that [-margin, margin] approximately captures the support of the density function.
+    :return:
+     """
+    assert 0 <= negative_scaling <= 1
+    assert rating_floor < negative_scaling_cap
+    assert K_rate >= 0
+    out = []
+    for i in range(len(ratings)):
+        old_rating = ratings[i]
+        grad = ratings_grad[i]
+        if grad < 0:
+            negative_scaling_strength = 1 - (min(old_rating, negative_scaling_cap) - rating_floor) / (negative_scaling_cap - rating_floor)
+            grad *= 1 - negative_scaling * negative_scaling_strength
+        rating_change = learning_rate * grad / (1 + K_rate * (old_rating - rating_floor))
+        new_rating = old_rating + rating_change
+        if new_rating < rating_floor:
+            new_rating = rating_floor
+        out.append(new_rating)
+    return out

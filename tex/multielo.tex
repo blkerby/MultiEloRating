@@ -9,11 +9,10 @@
 \begin{document}
 	\maketitle
 	\begin{abstract}
-		This is an expository note on practical generalizations of the Elo rating system to games with any number of players. Many 
-		approaches are considered, including pairwise Elo rating, the Plackett-Luce model, Thurstonian models, TrueSkill.
-		An application to Super Metroid Map Randomizer races is included.
-		Practical adjustments are considered for how to ensure a rating system is intuitive and rewarding for players to use,
-		for scenarios in which player ratings are publicly visible on a leaderboard.
+		This is an expository note on generalizations of the Elo rating system to games with any number of players. This
+		includes a discussion of pairwise Elo rating, the Plackett-Luce model, Thurstonian models, and TrueSkill.
+		% An application to Super Metroid Map Randomizer races is included. 
+		% Practical adjustments are considered for how to ensure a rating system is intuitive and rewarding for players to use, for scenarios in which player ratings are publicly visible on a leaderboard.
 	\end{abstract}
 	\section{Introduction}
 	[add more info here]
@@ -128,9 +127,8 @@
 	\end{align*}
 	In the case of the exponential version, this rule was equivalent to the one based on maximum likelihood, but in the Gaussian case
 	they are not the same. In particular, this rule has update sizes bounded by $\eta$, which is not the case for the likelihood-based
-	updates, as described above. The rule based on maximum likelihood estimation is probably generally preferable, based on its asymptotic
-	optimality. The other rule can be considered as a robust alternative based on the fact that its updates are bounded; however, if
-	bounded updates are desired, then the exponential version may be more appropriate.
+	updates, as described above. The rule based on maximum likelihood estimation may generally be preferable, based on its asymptotic
+	optimality. However, the other rule can be considered as a robust alternative based on the fact that its updates are bounded.
 
 	\section{Generalization to multiple players}
 	We now consider the scenario where any number of players compete in a free-for-all game. We assume latent variables
