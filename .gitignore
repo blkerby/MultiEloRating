@@ -1,1 +1,7 @@
 **/__pycache__
+racetime_data
+tex/*.aux
+tex/*.log
+tex/*.out
+tex/*.pdf
+tex/*.gz
