@@ -1,0 +1,238 @@
+\documentclass{article}
+\usepackage[left=3cm, right=3cm]{geometry}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{hyperref}
+\title{Multiplayer generalization of Elo rating system}
+\date{\today}
+\author{Brent Kerby}
+\begin{document}
+	\maketitle
+	\begin{abstract}
+		This is an expository note on practical generalizations of the Elo rating system to games with any number of players. Many 
+		approaches are considered, including pairwise Elo rating, the Plackett-Luce model, Thurstonian models, TrueSkill.
+		An application to Super Metroid Map Randomizer races is included.
+		Practical adjustments are considered for how to ensure a rating system is intuitive and rewarding for players to use,
+		for scenarios in which player ratings are publicly visible on a leaderboard.
+	\end{abstract}
+	\section{Introduction}
+	[add more info here]
+	We focus on the ``online" scenario, in which rating updates are applied immediately after each game. The same techniques can easily be adapted to other scenarios, where rating updates are applied in batches or offline.
+	\section{Two-player Elo}
+	We begin by reviewing the mathematical underpinnings of the 2-player Elo rating system, presenting it in a form that will generalize to more players. For simplicity, we assume that the game has a simple outcome in which one of the two players wins and the other loses, with no draw being possible.
+	
+	\subsection{Exponential version}
+	During a game, we model the performance of the two players as independent exponential random variables $X_1$ and $X_2$. Writing $\mu_1 = E(X_1)$ and $\mu_2 = E(X_2)$ for the mean performance of player 1 and player 2, the probability density functions of $X_1$ and $X_2$ can be written
+	$$f_i(x) = \frac1{\mu_i}e^{-x/\mu_i},\quad i=1, 2$$
+	The corresponding cumulative distribution functions are
+	$$F_i(x) = P(X_i < x) = 1 - e^{-x/\mu_i},\quad i=1, 2$$
+	
+	The outcome of the game is modeled as a win for player 1 if $X_1 > X_2$ and a win for player 2 if $X_2 > X_1$. The random variables $X_1$ and $X_2$ are latent: only their order is observable, not their actual values. The mean values $\mu_1$ and $\mu_2$ represent the underlying skill level of the players. Further, write $\mu_i = e^{\rho_i}$ to parametrize player skill on an exponential scale with underlying parameter $\rho_i$. This ensures that any real number $\rho_i$ is associated to a valid, positive skill level $\mu_i$. 
+	
+	Player ratings $r_i$ will be estimates of the underlying parameters $\rho_i$. The rule for updating estimated player ratings $r_i$ can be defined as a gradient-ascent step in a process of maximizing the log-likelihood of the observed outcome. For example, if player 2 wins, the log-likelihood gradient is defined as
+	$$g_i = \left(\frac{\partial}{\partial \rho_i} \log P(X_1 < X_2)\right) \bigg|_{\rho_1=r_1,\ \rho_2=r_2}$$
+	The update rule is then defined as
+	$$r_i' = r_i + \eta g_i$$
+	where $\eta$ is the learning rate (i.e. step size), $r_i$ is the rating of player $i$ before the current game, and $r_i'$ is the updated rating of player $i$ after the current game.
+	
+	Writing $\lambda_i = 1 / \mu_i$, the probability $P(X_1 < X_2)$ can be computed as
+	\begin{align*}
+	P(X_1 < X_2) &= \int_0^{\infty} \int_0^{x_2} f_1(x_1) f_2(x_2) dx_1\ dx_2 \\
+	&= \int_0^{\infty} f_2(x_2) \int_0^{x_2} f_1(x_1) dx_1\ dx_2 \\
+	&= \int_0^{\infty} \frac1{\mu_2}e^{-x_2/\mu_2} \int_0^{x_2} \frac1{\mu_1}e^{-x_1/\mu_1} dx_1\ dx_2 \\
+	&= \int_0^{\infty} \lambda_2 e^{-\lambda_2 x_2} \int_0^{x_2} \lambda_1 e^{-\lambda_1 x_1} dx_1\ dx_2 \\
+	&= \int_0^{\infty} \lambda_2 e^{-\lambda_2 x_2} (1 - e^{-\lambda_1 x_2})\ dx_2 \\
+	&= 1 - \frac{\lambda_2}{\lambda_1 + \lambda_2} \\
+	&= \frac{\lambda_1}{\lambda_1 + \lambda_2} \\
+	&= \frac{\mu_2}{\mu_1 + \mu_2} \\
+	&= \frac{e^{\rho_2}}{e^{\rho_1} + e^{\rho_2}}
+	\end{align*}
+	
+	We can then compute
+	\begin{align*}
+	\frac{\partial}{\partial \rho_1} \log P(X_1 < X_2)
+	&= \frac{\partial}{\partial \rho_1} \log \left(\frac{e^{\rho_2}}{e^{\rho_1} + e^{\rho_2}}\right) \\
+	&= \frac{\partial}{\partial \rho_1} (\rho_2 - \log (e^{\rho_1} + e^{\rho_2})) \\
+	&= -\frac{e^{\rho_1}}{e^{\rho_1} + e^{\rho_2}} \\
+	&= -\frac{\mu_1}{\mu_1 + \mu_2} \\
+	\end{align*}
+	and
+	\begin{align*}
+	\frac{\partial}{\partial \rho_2} \log P(X_1 < X_2)
+	&= \frac{\partial}{\partial \rho_2} (\rho_2 - \log (e^{\rho_1} + e^{\rho_2})) \\
+	&= 1 - \frac{e^{\rho_2}}{e^{\rho_1} + e^{\rho_2}} \\
+	&= \frac{e^{\rho_1}}{e^{\rho_1} + e^{\rho_2}} \\
+	&= \frac{\mu_1}{\mu_1 + \mu_2} \\
+	\end{align*}
+	
+	The update rules can then be written in an explicit form:
+	\begin{align*}
+	r_1' &= r_1 - \eta\frac{e^{r_1}}{e^{r_1} + e^{r_2}} \\
+	r_2' &= r_2 + \eta\frac{e^{r_1}}{e^{r_1} + e^{r_2}} 
+	\end{align*}
+	This can also be written in a form showing that the update increment depends only on the difference $r_2 - r_1$:
+	\begin{align*}
+	r_1' &= r_1 - \frac{\eta}{1 + e^{r_2 - r_1}} \\
+	r_2' &= r_2 + \frac{\eta}{1 + e^{r_2 - r_1}} 
+	\end{align*}
+	Some simple facts can be seen from the update rule: 
+	\begin{itemize}
+		\item The winning player receives an increase in rating equal to the losing player's decrease; i.e. this is a zero-sum game.
+		\item The size of the update is bounded by $\eta$.
+		\item If the losing player is very highly rated compared to the winning player, then the update size approaches $\eta$.
+		\item If the two players are equally rated, then the update size is $\eta / 2$.
+		\item If the losing player is very lowly rated compared to the winning player, then the update size approaches zero. 
+	\end{itemize}
+	Another way to view the update rule is that it adds a term proportionate to the difference between the actual win outcome (1 or 0) and the win probability:
+	\begin{align*}
+	r_1' &= r_1 + \eta(1\{X_1 > X_2\} - P(X_1 > X_2)) \\
+	r_2' &= r_2 + \eta(1\{X_2 > X_1\} - P(X_2 > X_1))
+	\end{align*}
+	It's also worth noting the symmetry in the rating scale: if we reversed its orientation so that the player with the lower value of $X_i$ wins,
+	the same update rules apply but with $r_1$ and $r_2$ replaced by $-r_1$ and $-r_2$ respectively.
+	
+	\subsection{Gaussian version}
+	
+	Instead of exponential random variables, a different version of the Elo rating system uses Gaussian random variables with constant variance:
+	$$X_i \sim N(\mu_i, 1),\quad i=1, 2$$
+	In this case no reparametrization is applied, so the mean values $\mu_i$ are the parameters estimated by the ratings: $\rho_i = \mu_i$.
+	
+	We can take advantage of the fact that $X_1 - X_2 \sim N(\mu_1 - \mu_2, 2)$ to write
+	\begin{align*}
+	P(X_1 < X_2) &= P(X_1 - X_2 < 0) \\
+	&= P\left(\frac{(X_1 - X_2) - (\mu_1 - \mu_2)}{\sqrt 2} < -\frac{\mu_1 - \mu_2}{\sqrt 2}\right) \\
+	&= \Phi\left(-\frac{\mu_1 - \mu_2}{\sqrt 2}\right)
+	\end{align*}
+	where $\Phi$ is the standard Gaussian cumulative distribution function.
+	
+	Again, in the case where player 2 wins, the gradients of the log-likelihood function are defined 
+	$$g_i = \left(\frac{\partial}{\partial \mu_i} \log P(X_1 < X_2)\right) \bigg|_{\mu_1=r_1,\ \mu_2=r_2}$$
+	These can be computed as
+	$$
+	g_1 = -\frac1{\sqrt 2}\frac{\phi\left(-\frac{\mu_1 - \mu_2}{\sqrt 2}\right)}{\Phi\left(-\frac{\mu_1 - \mu_2}{\sqrt 2}\right)},\quad
+	g_2 = \frac1{\sqrt 2}\frac{\phi\left(-\frac{\mu_1 - \mu_2}{\sqrt 2}\right)}{\Phi\left(-\frac{\mu_1 - \mu_2}{\sqrt 2}\right)}
+	$$
+	where $\phi$ is the standard Gaussian probability density function $\phi(x) = \Phi'(x) = \frac1{\sqrt{2\pi}}e^{-x^2/2}$.
+
+	Comparing this with the exponential version, the rating updates are again zero-sum, and again approach zero if the losing player
+	has much lower rating than the winning player. However in the Gaussian case, the updates are not bounded: for large values of $\mu_1 - \mu_2$,
+	the updates have a size approximately proportionate to $\mu_1 - \mu_2$; this can be seen based on the fact that
+	$\frac{\phi(x)}{\Phi(x)} \sim x$ as $x \to \infty$. Intuitively, a greater difference in ratings $\mu_1 - \mu_2$ represents
+	a more significant ``upset" in the case that player 2 wins, corresponding to the proportionately greater update in the ratings.
+	
+	It is worth noting that in its original formulation, the Elo rating system used a Gaussian distribution but based on an update
+	proportionate to the difference between the actual win outcome (1 or 0) and the win probability
+	\begin{align*}
+	r_1' &= r_1 + \eta(1\{X_1 > X_2\} - P(X_1 > X_2)) \\
+	r_2' &= r_2 + \eta(1\{X_2 > X_1\} - P(X_2 > X_1))
+	\end{align*}
+	In the case of the exponential version, this rule was equivalent to the one based on maximum likelihood, but in the Gaussian case
+	they are not the same. In particular, this rule has update sizes bounded by $\eta$, which is not the case for the likelihood-based
+	updates, as described above. The rule based on maximum likelihood estimation is probably generally preferable, based on its asymptotic
+	optimality. The other rule can be considered as a robust alternative based on the fact that its updates are bounded; however, if
+	bounded updates are desired, then the exponential version may be more appropriate.
+
+	\section{Generalization to multiple players}
+	We now consider the scenario where any number of players compete in a free-for-all game. We assume latent variables
+	$X_1, X_2, \dots, X_n$ representing each player's performance in the game, with only the ordering of these variables
+	being observed. Without loss of generality, assume the observed order is $X_1 < X_2 < \cdots < X_n$. We want to consider
+	possible rules for how to update the participant players' ratings based on this ordering.
+	
+	\subsection{Pairwise Elo}
+	One simple approach is to treat a multiplayer game as a collection of one-on-one games between each pair of players.
+	In this case, for each pair of players we consider the outcome $X_i < X_j$ and define an update to the ratings $r_i$ and $r_j$
+	using either the exponential or Gaussian version of the Elo rating system described above. There are $\binom{n}2 = \frac{n(n-1)}2$
+	such pairs, and these updates can then be summed across all pairs to obtain an overall update for all players.
+	
+	The main issue with this method is that it treats the outcomes of each pairing as though they were independent, whereas
+	in fact they will be correlated, since they are based on the same player performances from the same game. As a result,
+	this method will tend to be too heavily influenced by the outcomes of games with a large amount of players.
+	An alternative would be to take the mean (instead of sum) of all updates involving a given player. This, however, has the opposite 
+	problem by effectively under-weighting the outcome of large games: a large free-for-all game does reveal more information about
+	the players' skill than a one-on-one, but a pairwise Elo method is not an optimal way to capture this information.
+	
+	\subsection{Exponential version}
+	Next we consider a generalization of the exponential version of the Elo rating system described above. Here we assume
+	the latent random variables $X_i$ are independent and exponentially distributed with mean $\mu_i = e^{\rho_i}$, and
+	again write $\lambda_i = 1 / \mu_i = e^{-\rho_i}$. To make
+	things easier, assume for now that $n=3$ and that the observed order is $X_1 < X_2 < X_3$. We apply the same approach of
+	defining the rating update as a gradient-ascent step in maximum likelihood estimation, where the gradients can be written as
+	$$g_i = \left(\frac{\partial}{\partial \rho_i} \log P(X_1 < X_2 < X_3)\right) \bigg|_{\rho_1=r_1,\ \rho_2=r_2,\ \rho_3=r_3}$$
+	We can calculate
+	\begin{align*}
+		P(X_1 < X_2 < X_3) &= \int_0^{\infty} \int_0^{\infty} \int_0^{\infty} 1\{x_1 < x_2 < x_3\} f_1(x_1) f_2(x_2) f_3(x_3)\ dx_1\ dx_2\ dx_3 \\
+		&= \int_0^{\infty} \int_{x_1}^{\infty} \int_{x_2}^{\infty} f_1(x_1) f_2(x_2) f_3(x_3)\ dx_3\ dx_2\ dx_1 \\
+		&= \int_0^{\infty} f_1(x_1) \int_{x_1}^{\infty} f_2(x_2) \int_{x_2}^{\infty} f_3(x_3)\ dx_3\ dx_2\ dx_1 \\
+		&= \int_0^{\infty} \lambda_1 e^{-\lambda_1 x_1} \int_{x_1}^{\infty} \lambda_2 e^{-\lambda_2 x_2} \int_{x_2}^{\infty} \lambda_3 e^{-\lambda_3 x_3}\ dx_3\ dx_2\ dx_1 \\
+		&= \int_0^{\infty} \lambda_1 e^{-\lambda_1 x_1} \int_{x_1}^{\infty} \lambda_2 e^{-\lambda_2 x_2} e^{-\lambda_3 x_2}\ dx_2\ dx_1 \\
+		&= \int_0^{\infty} \lambda_1 e^{-\lambda_1 x_1} \int_{x_1}^{\infty} \lambda_2 e^{-(\lambda_2 + \lambda_3)x_2} \ dx_2\ dx_1 \\
+		&= \frac{\lambda_2}{\lambda_2 + \lambda_3} \int_0^{\infty} \lambda_1 e^{-\lambda_1 x_1} e^{-(\lambda_2 + \lambda_3)x_1} \ dx_1 \\
+		&= \frac{\lambda_2}{\lambda_2 + \lambda_3} \int_0^{\infty} \lambda_1 e^{-(\lambda_1 + \lambda_2 + \lambda_3)x_1} \ dx_1 \\
+		&= \frac{\lambda_2}{\lambda_2 + \lambda_3} \frac{\lambda_1}{\lambda_1 + \lambda_2 + \lambda_3}
+	\end{align*}
+	This can be interpreted as expressing $P(X_1 < X_2 < X_3)$ as a product of probabilities of independent events:
+	$$P(X_1 < X_2 < X_3) = P(X_1 < \min\{X_2, X_3\})P(X_2 < X_3)$$
+	In general, a similar calculation shows
+	\begin{align*}
+		P(X_1 < X_2 < \cdots < X_n) &= \prod_{i=1}^{n-1} P(X_i < \min\{X_{i+1}, \dots, X_n\})\\
+		&= \prod_{i=1}^{n-1} \frac{\lambda_i}{\sum_{j=i}^n \lambda_j}
+	\end{align*}
+	The log-likelihood can then be computed as
+	\begin{align*}
+		\log P(X_1 < X_2 < \cdots < X_n) &= \sum_{i=1}^n \log(\lambda_i) - \sum_{i=1}^n \log\left(\sum_{j=i}^n \lambda_j\right) \\
+		&= \sum_{i=1}^n (-\rho_i) - \sum_{i=1}^n \log\left(\sum_{j=i}^n e^{-\rho_j}\right) \\
+	\end{align*}
+	Therefore,
+	\begin{align*}
+		\frac{\partial}{\partial \rho_k} P(X_1 < X_2 < \cdots < X_n) &= -1 + \sum_{i=1}^k \frac{e^{-\rho_k}}{\sum_{j=i}^n e^{-\rho_j}} \\
+		&= -1 + \sum_{i=1}^k \frac{\lambda_k}{\sum_{j=i}^n \lambda_j}
+	\end{align*}
+	This leads to the following rating update rule:
+	$$r_k' = r_k + \eta\left(-1 + \sum_{i=1}^k \frac{e^{-r_k}}{\sum_{j=i}^n e^{-r_j}}\right)$$
+	It can again be verified that the update rule is zero-sum; this can be seen for instance by noticing that the log-likelihood is invariant under
+	adding a constant to all the ratings. 
+	
+	Noting that each term $\frac{e^{-r_k}}{\sum_{j=i}^n e^{-r_j}}$ is between 0 and 1, we see that the update
+	increment to $r_k$ is bounded between $-\eta$ and $\eta(k - 1)$. In particular, for the losing player, the update is bounded between $-\eta$ and 0, while for the winning player the update is bounded between 0 and $\eta(n - 1)$. This is symmetric only when $n=2$. For $n>2$ there is larger range of
+	possible rating increments for the winning player than for the losing player.
+	
+	One implication is that if we reversed the orientation of the rating scale, so that the player with the lower value of $X_i$ wins, for $n>2$ we would have
+	a fundamentally different system, one that does not become equivalent to the other system simply by negating the rating values.
+	The version of the system that we have described here could, for example, be appropriate for a game in which players are eliminated due to events that
+	occur at random times according to a Poisson process with rate varying by player skill, with the first player to be eliminated being ranked last place, and so on. Conversely, the system with a reversed rating scale could be appropriate for a game in which players win based on events that occur at random times, with the
+	first player to win being ranked first place, and so on.
+	
+	The model defined here (or more precisely, the one with reversed orientation) is known as a Plackett-Luce model, commonly used to describe how users make choices when faced with a list of options.
+	
+	\subsection{Gaussian version}
+	For many types of games, it is unrealistic to consider a player's placement as being determined by a single random event causing an elimination or a win. It's more common for the outcome of the game to be determined by an accumulation of smaller events, each of which incrementally improve or degrade the player's position. To the extent that a player's overall performance can be described as an aggregation of performances across many parts or aspects of the game, with some degree of independence between them, the central limit theorem justifies modeling the overall performance as a Gaussian random variable.
+	
+	Therefore, we assume we have latent random variables $X_i$, independent and distributed with a Gaussian distribution with mean $\mu_i$ and unit variance. Unfortunately, unlike the case with exponentially distributed variables, for Gaussian variables there is no simple, easily computed formula for the rating updates. However, for computing the log-likelihood function, fortunately it is not necessary to directly compute the high-dimensional integral, as it is possible to decompose
+	it as a sequence of operations on a single-dimensional function. For $n=3$ for example we have
+	
+	\begin{align*}
+	P(X_1 < X_2 < X_3) &= \int_{-\infty}^{\infty} \int_{-\infty}^{\infty} \int_{-\infty}^{\infty} 1\{x_1 < x_2 < x_3\} f_1(x_1) f_2(x_2) f_3(x_3)\ dx_1\ dx_2\ dx_3 \\
+	&= \int_{-\infty}^{\infty} \int_{-\infty}^{x_3} \int_{-\infty}^{x_2} f_1(x_1) f_2(x_2) f_3(x_3)\ dx_1\ dx_2\ dx_3 \\
+	&= \int_{-\infty}^{\infty} f_3(x_3) \int_{-\infty}^{x_3} f_2(x_2) \int_{-\infty}^{x_2} f_1(x_1) \ dx_1\ dx_2\ dx_3 \\
+	\end{align*}
+	
+	The idea is that we can approximate the innermost function $f_1(x_1)$ using, for example, a cubic spline. Its antiderivative $\int_{-\infty}^{x_2} f_1(x_1)$ will 
+	not be a cubic spline but can be approximated as one; this becomes a function of $x_2$. Its pointwise multiplication with $f_2(x_2)$ again can be approximated as a cubic spline, then we antidifferentiate again, and so on. This gives a fast and accurate way to compute the log-likelihood function numerically. An auto-differentiation package (e.g.\ PyTorch) can be used to perform this whole computation in a way that tracks the dependence on the ratings $r_i$, in order to
+	compute their gradient. This technique is not dependent on the specific form of the distributions being Gaussian with unit variance; other parametric families of distributions could also be used.
+	
+	There is a significant risk that the probability $P(X_1 < X_2 < \cdots < X_n)$ will numerically underflow, even if using double precision floating-point math.
+	To avoid this, rather than first computing this probability and then taking the logarithm at the end, it is better to keep everything in a log scale throughout the computation. An implementation of this technique can be found at \url{https://github.com/blkerby/MultiEloRating/blob/main/multi_elo_rating.py}.
+	
+	\section{Convergence}
+	With all of the techniques described above, it should not be taken for granted that the player ratings will necessarily converge in a way that indicates their true skill level. This would depend on many assumptions which may or may not be applicable in practice. A detailed analysis of these conditions is out of scope of this note, but we can at least mention some significant considerations.
+	
+	Because all the models described in this note are invariant under additive shifts in the ratings, this means that at best only pairwise differences in rating parameters $\rho_i - \rho_j$ would be identifiable, not the rating parameters themselves. In order for the ratings to exactly converge, each player would need to participate in an infinite amount of games, and the learning rate $\eta$ would have to decay and approach zero. In practice, player skill is not an unchanging parameter, as players learn and improve over time; therefore, it can be more reasonable to hold $\eta$ constant to allow changes in player skill to flow into updated ratings in a consistent amount of time, accepting that player ratings will always include some noise as they fluctuate from game to game.
+	
+	The way in which matches are constructed is also significant. For example, if players are split into two groups and only play games within their own group, then a comparison of ratings across the two groups would not be meaningful. A situation like this could reasonably happen with players who have a preferred time of day to play (e.g.\ based on their time zone) or if players only play with others in their same region (e.g.\ to reduce latency). This means that some measure of connectedness is required in the graph of which players are playing together, in order for ratings to be comparable across all players.
+	
+	If players can choose their own opponents, there can be ways for players to abuse the system, e.g.\ by farming rating points from another player that agrees to throw their games, or by using throwaway accounts controlled by the same player (in the case of online games). If ratings are based on the outcomes of tournament games, where matches can have a pre-defined, balanced structure, this is one way to limit potential bias in the data. In large online multiplayer game environments (e.g.\ Battle.net), players can be matched in a system-controlled way with other players, e.g.\ with those in the same rated skill range that happen to be queued at the same time; this allows players flexibility to play ranked games whenever they like, while limiting their ability to influence which opponent they play against (at least for ranked matches), helping protect the integrity of the system.
+	
+	In the randomizer communities on \url{https://racetime.gg}, race results are manually approved (``recorded") by a moderator, allowing flexibility for players to organize their own races while including some human check that the system is being used as intended.
+	
+	
+\end{document}
