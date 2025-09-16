@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import math
 
 
@@ -127,7 +128,11 @@ def get_thurstonian_rating_gradient(ratings: list[float], ranks: list[int], log_
     return a list of gradients of the log-likelihood with respect to those ratings.
     This indicates the direction that the ratings should be updated in order to
     increase the likelihood of the game's outcome. 
-    Ties are supported only for last place (i.e. highest-numbered rank).
+    :param ratings: A list of player ratings.
+    :param ranks: A corresponding list of player ranks in the outcome of the game. 
+      Ties are supported only for last place (i.e. highest-numbered rank).
+    :param log_density_fn: Log of the density function to be used.
+    :param margin: Value such that [-margin, margin] approximately captures the support of the density function.
     """
     ratings = torch.tensor(ratings, dtype=torch.double, requires_grad=True)
     ranks = torch.tensor(ranks, dtype=torch.int64)
@@ -142,11 +147,11 @@ def get_thurstonian_rating_gradient(ratings: list[float], ranks: list[int], log_
 def get_updated_ratings(
     ratings: list[float],
     ratings_grad: list[float],
-    learning_rate: float,
     rating_floor: float,
-    negative_scaling: float,
-    negative_scaling_cap: float,
-    K_rate: float,
+    learning_rate_base: float,
+    learning_rate_decay: float,
+    negative_scaling_base: float,
+    negative_scaling_decay: float,
 ) -> list[float]:
     """
     Given a list of player ratings and a list of corresponding ranks on a given game,
@@ -155,33 +160,25 @@ def get_updated_ratings(
     :param ratings_grad: A list of player rating gradient values.
     :param ranks: A corresponding list of player ranks in the outcome of the game. 
       Ties are supported only for last place (i.e. highest-numbered rank).
-    :param learning_rate: the overall scale factor applied to rating updates, i.e. the step size
     :param rating_floor: the minimum possible rating; any rating that drops below this will be clamped to this value.
-    :param negative_scaling: the maximum factor subtracted from negative rating gradients, to scale them down.
+    :param learning_rate_base: the maximum learning rate (a.k.a. step size), applied for ratings at the rating floor.
+    :param learning_rate_decay: the rate at which the learning rate decays exponentially as a function of the rating.
+    :param negative_scaling_base: the maximum factor subtracted from negative rating gradients, to scale them down.
       This is a way of softening the rating floor, to make it more continuous. It also functions as a sort of activity 
-      bonus for new players. This effect is fully applied at the rating floor and then tapered off linearly until it
-      stops at `negative_scaling_cap`. A value of 0 won't apply any scaling to negative gradients. A value of 1 will
-      completely zero out negative gradients at the rating floor.
-    :param negative_scaling_cap: the rating value beyond which no scaling of negative gradients will occur.
-    :param K_rate: a value that controls the extent to which the learning rate is decayed for higher-rated players.
-      Steps are multiplied by 1 / (1 + K_rate * (rating - rating_floor)). A value of 0 means apply the same
-      learning rate regardless of rating.
-    :param log_density_fn: Log of the density function to be used.
-    :param margin: Value such that [-margin, margin] approximately captures the support of the density function.
-    :return:
+      bonus for new players. This effect is fully applied at the rating floor and then tapers off exponentially. 
+      A value of 0 won't apply any scaling to negative gradients. A value of 1 will completely zero out negative gradients
+      at the rating floor.
+    :param negative_scaling_rate: the rate of exponential decay of negative gradient scaling.
+    :return: A list of updated player ratings.
      """
-    assert 0 <= negative_scaling <= 1
-    assert rating_floor < negative_scaling_cap
-    assert K_rate >= 0
     out = []
     for i in range(len(ratings)):
         old_rating = ratings[i]
         grad = ratings_grad[i]
+        lr = learning_rate_base * math.exp(-(old_rating - rating_floor) * learning_rate_decay)
         if grad < 0:
-            negative_scaling_strength = 1 - (min(old_rating, negative_scaling_cap) - rating_floor) / (negative_scaling_cap - rating_floor)
-            grad *= 1 - negative_scaling * negative_scaling_strength
-        rating_change = learning_rate * grad / (1 + K_rate * (old_rating - rating_floor))
-        new_rating = old_rating + rating_change
+            grad *= 1 - negative_scaling_base * math.exp(-(old_rating - rating_floor) * negative_scaling_decay)
+        new_rating = old_rating + lr * grad
         if new_rating < rating_floor:
             new_rating = rating_floor
         out.append(new_rating)

@@ -26,7 +26,7 @@ data_path = os.path.join(args.data_dir, f"{args.goal}.json")
 race_list = json.load(open(data_path, "r"))
 
 # Filter to recorded races:
-race_list = [race for race in race_list if race["recorded"]]
+# race_list = [race for race in race_list if race["recorded"]]
 
 # trueskill_env = trueskill.TrueSkill(backend='mpmath')
 # trueskill_env = trueskill.TrueSkill(backend=None, mu=0.0, sigma=3.0, beta=3.5, tau=0.8, draw_probability=1e-3)
@@ -36,10 +36,12 @@ user_scores = {}
 user_scores_history = defaultdict(lambda: [])
 
 average_lr = 0.002
-average_weight = 0.02
+# average_weight = 0.02
+average_weight = 0.0
 average_score = 0.0
 
-default_lr = 0.1
+# default_lr = 0.1
+default_lr = 0.0
 default_quantile = 0.09
 default_score = 0.0
 
@@ -106,9 +108,6 @@ def score_race(race_idx, entrants):
         rating_list = [(x,) for x in rating_list]
         new_ratings = trueskill_env.rate(rating_list, rank_list)
         new_ratings = [x[0] for x in new_ratings]
-        for i in range(len(new_ratings)):
-            adjusted_mu = new_ratings[i].mu - average_score * average_weight
-            new_ratings[i] = trueskill.Rating(mu=adjusted_mu, sigma=new_ratings[i].sigma)
     else:                  
         # ratings_grad = multi_elo_rating.plackett_luce_gradient(
         #     rating_list,
@@ -116,25 +115,25 @@ def score_race(race_idx, entrants):
         # new_ratings = multi_elo_rating.get_updated_ratings(
         #     rating_list,
         #     ratings_grad,
-        #     learning_rate=0.65,
-        #     rating_floor=-0.1,
-        #     negative_scaling=0.7,
-        #     negative_scaling_cap=2.5,
-        #     K_rate=1.5,
+        #     rating_floor=-0.4,
+        #     learning_rate_base=0.85,
+        #     learning_rate_decay=0.8,
+        #     negative_scaling_base=1.0,
+        #     negative_scaling_decay=0.45,
         # )
 
-        ratings_grad = multi_elo_rating.plackett_luce_gradient(
-            rating_list,
-            inverted=True)
-        new_ratings = multi_elo_rating.get_updated_ratings(
-            rating_list,
-            ratings_grad,
-            learning_rate=0.45,
-            rating_floor=-0.1,
-            negative_scaling=0.75,
-            negative_scaling_cap=2.5,
-            K_rate=1.7,
-        )
+        # ratings_grad = multi_elo_rating.plackett_luce_gradient(
+        #     rating_list,
+        #     inverted=True)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
+        #     ratings_grad,
+        #     rating_floor=-0.4,
+        #     learning_rate_base=1.2,
+        #     learning_rate_decay=0.9,
+        #     negative_scaling_base=1.0,
+        #     negative_scaling_decay=0.45,
+        # )
 
         # ratings_grad = multi_elo_rating.pairwise_elo_gradient(
         #     rating_list,
@@ -143,11 +142,11 @@ def score_race(race_idx, entrants):
         # new_ratings = multi_elo_rating.get_updated_ratings(
         #     rating_list,
         #     ratings_grad,
-        #     learning_rate=0.18,
-        #     rating_floor=-0.1,
-        #     negative_scaling=0.7,
-        #     negative_scaling_cap=3.5,
-        #     K_rate=1.85,
+        #     rating_floor=-0.4,
+        #     learning_rate_base=0.18,
+        #     learning_rate_decay=0.7,
+        #     negative_scaling_base=0.9,
+        #     negative_scaling_decay=0.4,
         # )
 
         # ratings_grad = multi_elo_rating.pairwise_elo_gradient(
@@ -157,41 +156,66 @@ def score_race(race_idx, entrants):
         # new_ratings = multi_elo_rating.get_updated_ratings(
         #     rating_list,
         #     ratings_grad,
-        #     learning_rate=1.5,
-        #     rating_floor=-0.1,
-        #     negative_scaling=0.7,
-        #     negative_scaling_cap=2.5,
-        #     K_rate=1.5,
+        #     rating_floor=-0.05,
+        #     learning_rate_base=4.0,
+        #     learning_rate_decay=0.9,
+        #     negative_scaling_base=0.8,
+        #     negative_scaling_decay=0.45,
         # )
 
-        # ratings_grad = multi_elo_rating.get_rating_gradient(
-        #     rating_list,
-        #     rank_list,
-        #     log_density_fn=multi_elo_rating.gaussian_log_density,
-        #     margin=5)
-        # new_ratings = multi_elo_rating.get_updated_ratings(
-        #     rating_list,
-        #     ratings_grad,
-        #     learning_rate=0.85,
-        #     rating_floor=-0.1,
-        #     negative_scaling=0.7,
-        #     negative_scaling_cap=3.5,
-        #     K_rate=2.0,
-        # )
+        ratings_grad = multi_elo_rating.get_thurstonian_rating_gradient(
+            rating_list,
+            rank_list,
+            log_density_fn=multi_elo_rating.gaussian_log_density,
+            margin=5)
+        new_ratings = multi_elo_rating.get_updated_ratings(
+            rating_list,
+            ratings_grad,
+            rating_floor=-0.05,
+            learning_rate_base=0.9,
+            learning_rate_decay=1.2,
+            negative_scaling_base=0.8,
+            negative_scaling_decay=0.45,
+        )
 
-        # ratings_grad = multi_elo_rating.get_rating_gradient(
+        # ratings_grad = multi_elo_rating.get_thurstonian_rating_gradient(
         #     rating_list,
         #     rank_list,
         #     log_density_fn=multi_elo_rating.hyperbolic_exp_density,
         #     margin=10)
         # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
         #     ratings_grad,
-        #     learning_rate=1.3,
-        #     rating_floor=-0.2,
-        #     negative_scaling=0.75,
-        #     negative_scaling_cap=4.0,
-        #     K_rate=1.3,
+        #     rating_floor=-0.05,
+        #     learning_rate_base=2.0,
+        #     learning_rate_decay=1.05,
+        #     negative_scaling_base=0.8,
+        #     negative_scaling_decay=0.45,
         # )
+
+        # ratings_grad = multi_elo_rating.get_thurstonian_rating_gradient(
+        #     rating_list,
+        #     rank_list,
+        #     log_density_fn=multi_elo_rating.hyperbolic_secant_density,
+        #     margin=10)
+        # new_ratings = multi_elo_rating.get_updated_ratings(
+        #     rating_list,
+        #     ratings_grad,
+        #     rating_floor=-0.05,
+        #     learning_rate_base=2.0,
+        #     learning_rate_decay=1.05,
+        #     negative_scaling_base=0.8,
+        #     negative_scaling_decay=0.45,
+        # )
+
+    if args.trueskill:
+        for i in range(len(new_ratings)):
+            adjusted_mu = new_ratings[i].mu - average_score * average_weight
+            new_ratings[i] = trueskill.Rating(mu=adjusted_mu, sigma=new_ratings[i].sigma)
+    else:
+        for i in range(len(new_ratings)):
+            adjusted_mu = new_ratings[i] - average_score * average_weight
+            new_ratings[i] = adjusted_mu
 
     for i in range(len(user_id_list)):
         user_id = user_id_list[i]
@@ -231,12 +255,12 @@ else:
 histories = list(user_scores_history.items())
 histories.sort(key=lambda x: len(x[1]), reverse=True)
 # print(list((x[0], len(x[1])) for x in histories))
-
+# print(histories[0])
 
 user_id_list = []
 time_list = []
 score_list = []
-for user_id, h in histories[:15]:
+for user_id, h in histories:
     for race_idx, score in h:
         user_id_list.append(user_id)
         # t = datetime.datetime.fromisoformat(race_list[race_idx]["ended_at"].replace('Z', '+00:00'))
@@ -255,4 +279,4 @@ df = pd.DataFrame({
 
 sns.set_theme()
 sns.relplot(df, kind="line", x="Race", y="Simulated Rating", hue="User ID")
-# plt.show()
+plt.show()
