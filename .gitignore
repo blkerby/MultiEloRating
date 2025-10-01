@@ -5,3 +5,7 @@ tex/*.log
 tex/*.out
 tex/*.pdf
 tex/*.gz
+tex/*.bbl
+tex/*.blg
+tex/*.xml
+tex/*.bcf
