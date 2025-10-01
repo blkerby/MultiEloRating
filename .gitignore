@@ -3,7 +3,6 @@ racetime_data
 tex/*.aux
 tex/*.log
 tex/*.out
-tex/*.pdf
 tex/*.gz
 tex/*.bbl
 tex/*.blg
